@@ -5,10 +5,10 @@ import (
 	"math/rand/v2"
 	"time"
 
-	"github.com/yylego/go-mqtt/internal/utils"
-	"github.com/yylego/go-mqtt/mqttgo"
+	"github.com/google/uuid"
 	"github.com/pkg/errors"
 	"github.com/yylego/erero"
+	"github.com/yylego/go-mqtt/mqttgo"
 	"github.com/yylego/must"
 	"github.com/yylego/neatjson/neatjsons"
 	"github.com/yylego/rese"
@@ -25,7 +25,7 @@ func main() {
 		OrderMatters: false,
 	}
 
-	client1 := rese.V1(mqttgo.NewClientWithCallback(config, utils.NewUUID(), mqttgo.NewCallback().
+	client1 := rese.V1(mqttgo.NewClientWithCallback(config, uuid.NewString(), mqttgo.NewCallback().
 		OnConnect(func(c mqttgo.Client, retryTimes uint64) (mqttgo.CallbackState, error) {
 			if retryTimes > 10 {
 				return mqttgo.CallbackTimeout, nil
@@ -38,7 +38,7 @@ func main() {
 	))
 	defer client1.Disconnect(500)
 
-	client2 := rese.V1(mqttgo.NewClientWithCallback(config, utils.NewUUID(), mqttgo.NewCallback().
+	client2 := rese.V1(mqttgo.NewClientWithCallback(config, uuid.NewString(), mqttgo.NewCallback().
 		OnConnect(func(c mqttgo.Client, retryTimes uint64) (mqttgo.CallbackState, error) {
 			token := c.Subscribe(mqttTopic, 1, func(client mqttgo.Client, message mqttgo.Message) {
 				zaplog.SUG.Debugln("subscribe-msg:", neatjsons.SxB(message.Payload()))
@@ -59,7 +59,7 @@ func main() {
 		C float64
 	}
 
-	for i := 0; i < 100; i++ {
+	for i := range 100 {
 		msg := &MessageType{
 			A: time.Now().String(),
 			B: i,

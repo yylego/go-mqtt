@@ -8,6 +8,9 @@
 package mqttgo
 
 import (
+	"sync/atomic"
+
+	"github.com/yylego/erero"
 	"github.com/yylego/zaplog"
 	"go.uber.org/zap"
 )
@@ -24,17 +27,32 @@ type Log interface {
 	DebugLog(msg string, fields ...zap.Field) // Logs debug-level messages with structured fields // 记录调试级别消息及结构化字段
 }
 
-var log Log = newLog()
+// currentLog holds the Log in use; it is atomic since clients log from background goroutines while SetLog can run
+// currentLog 保存当前使用的 Log；客户端在后台协程里打日志时也可能有人调用 SetLog，所以用原子指针
+var currentLog atomic.Pointer[Log]
 
-// SetLog replaces the default logger with a custom implementation
+func init() {
+	SetLog(newLog())
+}
+
+// SetLog replaces the Log in use with a custom implementation
 // Allows integration with existing logging infrastructure
-// Must be called before creating any MQTT clients to take effect
+// Safe at each point in time, even once clients run; messages logged past this point go to the new Log
 //
-// SetLog 用自定义实现替换默认日志记录器
+// SetLog 用自定义实现替换当前使用的日志
 // 允许与现有日志基础设施集成
-// 必须在创建任何 MQTT 客户端之前调用才能生效
+// 随时可以调用，客户端已经在跑也安全；调用之后的日志写到新的 Log
 func SetLog(mqttLog Log) {
-	log = mqttLog
+	if mqttLog == nil {
+		panic(erero.New("mqttgo.SetLog: mqttLog must not be nil"))
+	}
+	currentLog.Store(&mqttLog)
+}
+
+// getLog returns the Log in use
+// getLog 返回当前使用的 Log
+func getLog() Log {
+	return *currentLog.Load()
 }
 
 type zapLog struct{}

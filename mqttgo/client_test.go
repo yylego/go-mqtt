@@ -1,8 +1,10 @@
 package mqttgo
 
 import (
+	"errors"
 	"os"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -18,6 +20,10 @@ import (
 
 const testBrokerAddress = "tcp://127.0.0.1:11883" // Test broker address // 测试 broker 地址
 
+// embeddedMqtt is the embedded MQTT service, kept at package scope so tests can kick clients from the service side
+// embeddedMqtt 是内嵌的 MQTT 服务，放在包级别，测试才能从服务一侧踢掉客户端
+var embeddedMqtt *mqttserver.Server
+
 // TestMain sets up embedded MQTT broker for all tests and tears down after completion
 // Provides isolated test environment without outside broker dependencies
 // Runs before any test functions and ensures clean broker startup and shutdown
@@ -31,7 +37,7 @@ func TestMain(m *testing.M) {
 	//
 	// Create embedded MQTT broker with inline client support for testing
 	// 创建支持内联客户端的嵌入式 MQTT broker 用于测试
-	testServer := mqttserver.New(&mqttserver.Options{
+	embeddedMqtt = mqttserver.New(&mqttserver.Options{
 		InlineClient: true, // Enable inline client for testing // 启用内联客户端用于测试
 	})
 
@@ -40,7 +46,7 @@ func TestMain(m *testing.M) {
 	//
 	// Add authentication hook allowing all connections for test environment
 	// 添加允许所有连接的认证钩子用于测试环境
-	must.Done(testServer.AddHook(new(auth.AllowHook), nil))
+	must.Done(embeddedMqtt.AddHook(new(auth.AllowHook), nil))
 
 	// Create and attach TCP listener on test port for client connections
 	// Uses port 11883 to avoid conflicts with standard MQTT port 1883
@@ -51,7 +57,7 @@ func TestMain(m *testing.M) {
 		ID:      "test-tcp-listener",
 		Address: ":11883",
 	})
-	must.Done(testServer.AddListener(tcp))
+	must.Done(embeddedMqtt.AddListener(tcp))
 
 	// Start broker server in background routine for test duration
 	// Launches broker serving connections without blocking test execution
@@ -59,7 +65,7 @@ func TestMain(m *testing.M) {
 	// Start broker server in background routine for test duration
 	// 在后台协程中启动 broker 服务用于测试期间
 	go func() {
-		must.Done(testServer.Serve())
+		must.Done(embeddedMqtt.Serve())
 	}()
 
 	// Allow broker time to initialize before running tests
@@ -81,7 +87,7 @@ func TestMain(m *testing.M) {
 	//
 	// Shutdown broker and cleanup resources after test completion
 	// 测试完成后关闭 broker 并清理资源
-	must.Done(testServer.Close())
+	must.Done(embeddedMqtt.Close())
 
 	// Exit with test suite result code for CI integration
 	// Preserves test pass/fail status for outside tooling
@@ -99,7 +105,7 @@ func TestMain(m *testing.M) {
 func TestNewClient(t *testing.T) {
 	cfg := &Config{
 		BrokerServer: testBrokerAddress,
-		Username:     "test-user",
+		Username:     "test-username",
 		Password:     "test-pass",
 	}
 
@@ -125,7 +131,7 @@ func TestPublishSubscribe(t *testing.T) {
 
 	cfg := &Config{
 		BrokerServer: testBrokerAddress,
-		Username:     "test-user",
+		Username:     "test-username",
 		Password:     "test-pass",
 	}
 
@@ -202,18 +208,20 @@ func TestNewClientWithCallback(t *testing.T) {
 
 	cfg := &Config{
 		BrokerServer: testBrokerAddress,
-		Username:     "test-user",
+		Username:     "test-username",
 		Password:     "test-pass",
 	}
 
-	var subscribed bool
+	// The callback runs in a background goroutine, so the flag is atomic
+	// 回调在后台协程里执行，所以标记用原子变量
+	var subscribed atomic.Bool
 	callback := NewCallback().OnConnect(func(client mqtt.Client, retryTimes uint64) (CallbackState, error) {
 		token := client.Subscribe(testTopic, 1, func(client mqtt.Client, msg mqtt.Message) {
 			t.Log("received message:", string(msg.Payload()))
 		})
 		state := rese.C1(CheckToken(token, time.Second*5))
 		if state == TokenStateSuccess {
-			subscribed = true
+			subscribed.Store(true)
 			return CallbackSuccess, nil
 		}
 		return CallbackRetries, nil
@@ -229,8 +237,7 @@ func TestNewClientWithCallback(t *testing.T) {
 	//
 	// Wait for callback to complete subscription
 	// 等待回调完成订阅
-	time.Sleep(time.Millisecond * 200)
-	require.True(t, subscribed)
+	require.Eventually(t, subscribed.Load, time.Second*5, time.Millisecond*50)
 }
 
 // TestCheckToken validates token status checking with timeout behavior
@@ -241,7 +248,7 @@ func TestNewClientWithCallback(t *testing.T) {
 func TestCheckToken(t *testing.T) {
 	cfg := &Config{
 		BrokerServer: testBrokerAddress,
-		Username:     "test-user",
+		Username:     "test-username",
 		Password:     "test-pass",
 	}
 
@@ -269,7 +276,7 @@ func TestCheckToken(t *testing.T) {
 func TestWaitToken(t *testing.T) {
 	cfg := &Config{
 		BrokerServer: testBrokerAddress,
-		Username:     "test-user",
+		Username:     "test-username",
 		Password:     "test-pass",
 	}
 
@@ -301,7 +308,7 @@ func TestMultipleSubscribers(t *testing.T) {
 
 	cfg := &Config{
 		BrokerServer: testBrokerAddress,
-		Username:     "test-user",
+		Username:     "test-username",
 		Password:     "test-pass",
 	}
 
@@ -313,7 +320,7 @@ func TestMultipleSubscribers(t *testing.T) {
 	//
 	// Create multiple subscriber clients listening to same topic
 	// 创建多个订阅客户端监听同一主题
-	for i := 0; i < numSubscribers; i++ {
+	for range numSubscribers {
 		clientID := rese.C1(uuid.NewUUID()).String()
 		opts := NewClientOptions(cfg, clientID)
 		opts.OnConnect = func(client mqtt.Client) {
@@ -366,5 +373,192 @@ func TestMultipleSubscribers(t *testing.T) {
 		t.Log("broadcast success")
 	case <-time.After(time.Second * 5):
 		t.Fatal("broadcast timeout")
+	}
+}
+
+// TestNewClientWithCallback_Reconnect kicks the client from the service side and checks that it reconnects on its own,
+// subscribes again in OnConnect, and keeps receiving messages
+//
+// TestNewClientWithCallback_Reconnect 从服务一侧踢掉客户端，验证它会自己重连、在 OnConnect 里重新订阅、继续收到消息
+func TestNewClientWithCallback_Reconnect(t *testing.T) {
+	const topic = "reconnect-test-topic"
+
+	cfg := &Config{
+		BrokerServer: testBrokerAddress,
+		Username:     "test-username",
+		Password:     "test-pass",
+	}
+
+	received := make(chan string, 10)
+	var subscribeCount atomic.Int64
+
+	subID := uuid.NewString()
+	subClient := rese.V1(NewClientWithCallback(cfg, subID, NewCallback().
+		OnConnect(func(c mqtt.Client, retryTimes uint64) (CallbackState, error) {
+			token := c.Subscribe(topic, 1, func(client mqtt.Client, msg mqtt.Message) {
+				received <- string(msg.Payload())
+			})
+			if _, err := CheckToken(token, time.Second*5); err != nil {
+				return CallbackRetries, err
+			}
+			subscribeCount.Add(1)
+			return CallbackSuccess, nil
+		}),
+	))
+	defer subClient.Disconnect(250)
+
+	pubClient := rese.V1(NewClient(NewClientOptions(cfg, uuid.NewString())))
+	defer pubClient.Disconnect(250)
+
+	publishAndReceive := func(text string) {
+		token := pubClient.Publish(topic, 1, false, text)
+		must.Same(rese.C1(CheckToken(token, time.Second*5)), TokenStateSuccess)
+		select {
+		case got := <-received:
+			require.Equal(t, text, got)
+		case <-time.After(time.Second * 5):
+			t.Fatalf("message %q not received", text)
+		}
+	}
+
+	require.Eventually(t, func() bool { return subscribeCount.Load() == 1 }, time.Second*5, time.Millisecond*50)
+	publishAndReceive("before-kick")
+
+	// Kick the client from the service side, as a network drop would
+	// 从服务一侧踢掉客户端，相当于网络断开
+	kickClient(t, subID)
+
+	require.Eventually(t, func() bool { return subscribeCount.Load() == 2 }, time.Second*15, time.Millisecond*50)
+	publishAndReceive("post-kick")
+}
+
+// TestCallback_Subscribe subscribes with the one-line Subscribe, kicks the client from the service side,
+// and checks that messages keep coming once it has reconnected
+//
+// TestCallback_Subscribe 用一行的 Subscribe 订阅，从服务一侧踢掉客户端，验证重连后照样收到消息
+func TestCallback_Subscribe(t *testing.T) {
+	const topic = "subscribe-test-topic"
+
+	cfg := &Config{
+		BrokerServer: testBrokerAddress,
+		Username:     "test-username",
+		Password:     "test-pass",
+	}
+
+	received := make(chan string, 100)
+
+	subID := uuid.NewString()
+	subClient := rese.V1(NewClientWithCallback(cfg, subID, NewCallback().
+		Subscribe(topic, 1, func(client mqtt.Client, msg mqtt.Message) {
+			received <- string(msg.Payload())
+		}),
+	))
+	defer subClient.Disconnect(250)
+
+	pubClient := rese.V1(NewClient(NewClientOptions(cfg, uuid.NewString())))
+	defer pubClient.Disconnect(250)
+
+	// The subscription runs in the background once connected, so keep publishing to see one message come back
+	// 订阅在连上后于后台执行，所以反复发布，直到收到一条
+	requireDelivered := func(text string) {
+		require.Eventually(t, func() bool {
+			must.Same(rese.C1(CheckToken(pubClient.Publish(topic, 1, false, text), time.Second*5)), TokenStateSuccess)
+			select {
+			case got := <-received:
+				return got == text
+			case <-time.After(time.Millisecond * 200):
+				return false
+			}
+		}, time.Second*15, time.Millisecond*50)
+	}
+
+	requireDelivered("before-kick")
+	kickClient(t, subID)
+	requireDelivered("post-kick")
+}
+
+// kickClient drops the client's connection from the service side, as a network drop would
+// kickClient 从服务一侧断开客户端的连接，相当于网络断开
+func kickClient(t *testing.T, clientID string) {
+	serviceSide, ok := embeddedMqtt.Clients.Get(clientID)
+	require.True(t, ok)
+	serviceSide.Stop(errors.New("kicked in the test"))
+}
+
+// TestSubscribeTopic_Rejected subscribes a topic that the service denies and checks that the rejection comes back as an error,
+// not as a subscription that looks fine yet gets no message
+//
+// TestSubscribeTopic_Rejected 订阅一个服务拒绝的主题，验证拒绝会报成错误，而不是看起来订阅成功、却永远收不到消息
+func TestSubscribeTopic_Rejected(t *testing.T) {
+	// A second embedded service whose access rules reject the topics in denied/
+	// 另起一个内嵌服务，访问规则拒绝 denied/ 下的主题
+	strictMqtt := mqttserver.New(&mqttserver.Options{InlineClient: true})
+	must.Done(strictMqtt.AddHook(new(auth.Hook), &auth.Options{
+		Ledger: &auth.Ledger{
+			Auth: auth.AuthRules{{Allow: true}},
+			ACL:  auth.ACLRules{{Filters: auth.Filters{"denied/#": auth.Deny}}},
+		},
+	}))
+	must.Done(strictMqtt.AddListener(listeners.NewTCP(listeners.Config{ID: "strict-tcp", Address: ":11884"})))
+	go func() {
+		must.Done(strictMqtt.Serve())
+	}()
+	defer func() { must.Done(strictMqtt.Close()) }()
+	time.Sleep(time.Millisecond * 200)
+
+	cfg := &Config{
+		BrokerServer: "tcp://127.0.0.1:11884",
+		Username:     "test-username",
+		Password:     "test-pass",
+	}
+	client := rese.V1(NewClient(NewClientOptions(cfg, uuid.NewString())))
+	defer client.Disconnect(250)
+
+	err := subscribeTopic(client, "denied/topic", 1, func(client mqtt.Client, msg mqtt.Message) {})
+	require.ErrorContains(t, err, "rejected")
+}
+
+// TestNewCallback checks that a new Callback starts with no callbacks and that each chained method adds to the same Callback
+// TestNewCallback 验证新建的 Callback 是空的，链式调用每次都加到同一个 Callback 上
+func TestNewCallback(t *testing.T) {
+	callback := NewCallback()
+	require.Empty(t, callback.onConnects)
+
+	chained := callback.
+		OnConnect(func(client mqtt.Client, retryTimes uint64) (CallbackState, error) { return CallbackSuccess, nil }).
+		Subscribe("chain-test-topic", 1, func(client mqtt.Client, msg mqtt.Message) {})
+	require.Same(t, callback, chained)
+	require.Len(t, callback.onConnects, 2)
+}
+
+// TestCallback_OnConnect registers two OnConnect callbacks and checks that both run on connect, in the sequence of adding
+// TestCallback_OnConnect 注册两个 OnConnect 回调，验证连上后两个都会执行，且按添加的先后执行
+func TestCallback_OnConnect(t *testing.T) {
+	cfg := &Config{
+		BrokerServer: testBrokerAddress,
+		Username:     "test-username",
+		Password:     "test-pass",
+	}
+
+	steps := make(chan string, 2)
+	client := rese.V1(NewClientWithCallback(cfg, uuid.NewString(), NewCallback().
+		OnConnect(func(client mqtt.Client, retryTimes uint64) (CallbackState, error) {
+			steps <- "first"
+			return CallbackSuccess, nil
+		}).
+		OnConnect(func(client mqtt.Client, retryTimes uint64) (CallbackState, error) {
+			steps <- "second"
+			return CallbackSuccess, nil
+		}),
+	))
+	defer client.Disconnect(250)
+
+	for _, want := range []string{"first", "second"} {
+		select {
+		case got := <-steps:
+			require.Equal(t, want, got)
+		case <-time.After(time.Second * 5):
+			t.Fatalf("callback %q did not run", want)
+		}
 	}
 }

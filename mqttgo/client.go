@@ -8,6 +8,8 @@
 package mqttgo
 
 import (
+	"time"
+
 	mqtt "github.com/eclipse/paho.mqtt.golang"
 	"github.com/yylego/erero"
 	"github.com/yylego/must"
@@ -32,7 +34,7 @@ func NewClientWithCallback(config *Config, clientID string, callback *Callback) 
 		// OnConnect 回调按照源码异步执行
 		// 此封装为订阅操作提供简单的重新尝试逻辑
 		clientOptions.OnConnect = func(client mqtt.Client) {
-			log.DebugLog("client-connected-reconnected-run", zap.String("clientID", clientID))
+			getLog().DebugLog("client-connected-reconnected-run", zap.String("clientID", clientID))
 			for _, onConnect := range onConnects {
 				OnConnectWithRetries(client, onConnect)
 			}
@@ -71,6 +73,52 @@ func NewCallback() *Callback {
 func (C *Callback) OnConnect(onConnect func(client mqtt.Client, retryTimes uint64) (CallbackState, error)) *Callback {
 	C.onConnects = append(C.onConnects, onConnect)
 	return C
+}
+
+// subscribeTimeout caps the wait to get one subscription confirmed
+// subscribeTimeout 是等一次订阅被确认的最长时间
+const subscribeTimeout = 10 * time.Second
+
+// Subscribe adds a topic subscription that runs on connect and again on each reconnect
+// It sends the subscription and waits up to 10 seconds to get it confirmed; a failure goes back to the reattempt loop
+// Use OnConnect instead when the client needs more than plain subscriptions once connected
+// Callbacks run in sequence, matching the sequence of adding, so a topic the service keeps rejecting holds up the ones added past it;
+// an ERROR log then shows up each few seconds, and fixing the topic name and permission clears it
+// Returns self to support method chaining
+//
+// Subscribe 添加一个主题订阅，连接时执行，每次重连后再执行一遍
+// 发出订阅后最多等 10 秒确认；失败交给重新尝试的循环再试
+// 连上之后除了订阅还要做别的事时，改用 OnConnect
+// 回调按添加顺序逐个执行，所以一个一直被服务拒绝的主题会挡住排在它后面的主题；
+// 这时每隔几秒会有一条 ERROR 日志，改对主题或权限即可
+// 返回自身以支持流式方法链
+func (C *Callback) Subscribe(topic string, qos byte, onMessage mqtt.MessageHandler) *Callback {
+	return C.OnConnect(func(client mqtt.Client, retryTimes uint64) (CallbackState, error) {
+		if err := subscribeTopic(client, topic, qos, onMessage); err != nil {
+			return CallbackRetries, err
+		}
+		return CallbackSuccess, nil
+	})
+}
+
+// subscribeTopic subscribes one topic and waits up to subscribeTimeout to get it confirmed
+// A rejection (such as no permission on the topic) comes back as a return code at 0x80 and up with no error on the token,
+// so the code gets checked too; without this check a rejected topic would look subscribed and get no message
+//
+// subscribeTopic 订阅一个主题，最多等 subscribeTimeout 确认
+// 被拒绝（如没有这个主题的权限）时 token 上没有错误，只是返回码为 0x80 及以上，所以返回码也要查；
+// 不查的话被拒的主题看起来订阅成功了，却永远收不到消息
+func subscribeTopic(client mqtt.Client, topic string, qos byte, onMessage mqtt.MessageHandler) error {
+	token := client.Subscribe(topic, qos, onMessage)
+	if _, err := CheckToken(token, subscribeTimeout); err != nil {
+		return erero.WithMessagef(err, "subscribe topic %s", topic)
+	}
+	if subToken, ok := token.(*mqtt.SubscribeToken); ok {
+		if code := subToken.Result()[topic]; code >= 0x80 {
+			return erero.Errorf("subscribe topic %s rejected (return code %#x)", topic, code)
+		}
+	}
+	return nil
 }
 
 // NewClient creates and connects an MQTT client with given options

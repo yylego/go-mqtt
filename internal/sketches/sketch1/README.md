@@ -3,6 +3,7 @@
 Uses [EMQX](https://github.com/emqx/emqx) as the external MQTT message service.
 
 This sketch shows:
+
 - Connecting to EMQX via WebSocket (ws://127.0.0.1:8083/mqtt)
 - Creating 10 clients that receive messages from the same topic
 - Creating 1 client that sends 100 timestamped messages

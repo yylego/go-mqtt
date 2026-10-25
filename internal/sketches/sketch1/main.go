@@ -4,8 +4,8 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/yylego/go-mqtt/mqttgo"
 	"github.com/google/uuid"
+	"github.com/yylego/go-mqtt/mqttgo"
 	"github.com/yylego/must"
 	"github.com/yylego/rese"
 	"github.com/yylego/tern"
@@ -16,7 +16,7 @@ import (
 func main() {
 	const mqttTopic = "mqtt-go-sketch1-topic"
 
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		client := rese.V1(mqttgo.NewClient(NewClientOptions(func(client mqtt.Client) {
 			token := client.Subscribe(mqttTopic, 1, func(client mqtt.Client, message mqtt.Message) {
 				zaplog.SUG.Debugln("subscribe-msg:", string(message.Payload()))
@@ -29,7 +29,7 @@ func main() {
 	client := rese.V1(mqttgo.NewClient(NewClientOptions(nil)))
 	must.True(client.IsConnected())
 	defer client.Disconnect(250)
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		content := time.Now().String()
 		zaplog.SUG.Debugln("publish-msg:", content)
 		token := client.Publish(mqttTopic, 1, false, content)

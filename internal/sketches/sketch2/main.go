@@ -4,11 +4,11 @@ import (
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
-	"github.com/yylego/go-mqtt/mqttgo"
 	"github.com/google/uuid"
 	mqttserver "github.com/mochi-mqtt/server/v2"
 	"github.com/mochi-mqtt/server/v2/hooks/auth"
 	"github.com/mochi-mqtt/server/v2/listeners"
+	"github.com/yylego/go-mqtt/mqttgo"
 	"github.com/yylego/must"
 	"github.com/yylego/rese"
 	"github.com/yylego/tern"
@@ -72,7 +72,7 @@ func main() {
 	//
 	// Create multiple subscriber clients for testing concurrency
 	// 创建多个订阅客户端用于测试并发
-	for i := 0; i < 10; i++ {
+	for range 10 {
 		client := rese.V1(mqttgo.NewClient(NewClientOptions(func(client mqtt.Client) {
 			token := client.Subscribe(mqttTopic, 1, func(client mqtt.Client, message mqtt.Message) {
 				zaplog.SUG.Debugln("subscribe-msg:", string(message.Payload()))
@@ -96,7 +96,7 @@ func main() {
 	//
 	// Publish test messages to subscribed clients
 	// 向订阅客户端发布测试消息
-	for i := 0; i < 100; i++ {
+	for range 100 {
 		content := time.Now().String()
 		zaplog.SUG.Debugln("publish-msg:", content)
 		token := client.Publish(mqttTopic, 1, false, content)

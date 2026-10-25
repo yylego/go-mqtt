@@ -46,14 +46,19 @@ func NewClientOptions(cfg *Config, clientID string) *mqtt.ClientOptions {
 
 	opts.SetKeepAlive(60 * time.Second)
 	opts.SetDefaultPublishHandler(func(client mqtt.Client, msg mqtt.Message) {
-		log.DebugLog("default-publish-handle-function", zap.String("clientID", clientID), zap.String("topic", msg.Topic()))
+		getLog().DebugLog("default-publish-handle-function", zap.String("clientID", clientID), zap.String("topic", msg.Topic()))
 	})
-	opts.SetPingTimeout(1 * time.Second)
+	// Give the ping 10 seconds to come back before the connection counts as lost; 1 second cut good links on slow networks
+	// 心跳等 10 秒没回应才算断开；原来的 1 秒在慢一点的网络上会把好好的连接判成断开
+	opts.SetPingTimeout(10 * time.Second)
+	// Cap the wait between reconnect attempts at 10 seconds; with the paho default of 10 minutes, a client stays offline some minutes past the moment the remote end comes back
+	// 重连间隔最长 10 秒；paho 默认最长 10 分钟，服务端恢复后客户端还要等上好几分钟才重连
+	opts.SetMaxReconnectInterval(10 * time.Second)
 	opts.OnConnect = func(client mqtt.Client) {
-		log.DebugLog("client-on-connected-on-reconnected-callback", zap.String("clientID", clientID))
+		getLog().DebugLog("client-on-connected-on-reconnected-callback", zap.String("clientID", clientID))
 	}
 	opts.OnConnectionLost = func(client mqtt.Client, err error) {
-		log.ErrorLog("client-on-lost-connection-callback", zap.String("clientID", clientID), zap.Error(err))
+		getLog().ErrorLog("client-on-lost-connection-callback", zap.String("clientID", clientID), zap.Error(err))
 	}
 	return opts
 }

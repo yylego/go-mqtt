@@ -3,6 +3,7 @@
 Uses [mochi-mqtt/server](https://github.com/mochi-mqtt/server) as the embedded MQTT engine.
 
 This sketch demonstrates:
+
 - Building an embedded MQTT service with `github.com/mochi-mqtt/server/v2`
 - Launching the service on TCP port 11883
 - Multiple clients that receive messages from the same topic
